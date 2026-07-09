@@ -5,3 +5,4 @@ ios/Frameworks/
 linux/lib/
 macos/Frameworks/
 windows/lib/
+.gradle/
