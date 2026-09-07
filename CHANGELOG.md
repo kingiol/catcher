@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file. See [release-please](https://github.com/googleapis/release-please) for automated management.
 
+## 0.3.19 (2026-08-13)
+
+> 修复 N-API HTTP 传输异常被压缩成 `GenericFailure`、导致上层无法识别失败阶段和最终重试原因的问题。
+
+### 🐛 Bug Fixes
+
+- **结构化传输异常**：连接拒绝、DNS、TLS、连接超时、请求超时及其他传输失败均提供稳定的 `code`、`phase`、`retryable` 和白名单 `details`。
+- **保留重试根因**：`RETRY_EXHAUSTED` 记录实际执行总次数，并在 `details.lastError` 中保留最终结构化异常，不再只保存字符串。
+- **N-API 错误类型**：JavaScript 调用方收到导出的 `CatcherError` / `HttpError`，同时保留旧版 HTTP 文本错误兼容解析。
+- **安全诊断信息**：原生错误链序列化前移除请求 URL，避免查询参数和 token 泄漏。
+- **跨平台契约覆盖**：CI 在 Linux、macOS 和 Windows 上验证非法配置、连接拒绝、重试耗尽和请求超时契约。
+
+### 📦 Packaging
+
+- 所有 npm、Rust、NAPI 和 Flutter 包统一同步到 `0.3.19`。
+
+## 0.3.18 (2026-08-07)
+
+> 修复代理/VPN/网络路径变化后服务端返回 HTTP 421（Misdirected Request）时客户端持续失败的问题，并为 NAPI 调用方提供结构化 HTTP 状态错误。
+
+### 🐛 Bug Fixes
+
+- **HTTP 421 自动恢复**：`catcher-http` 收到 421 后仅重建当前 transport 的连接池，并在新连接上重试一次；持续返回 421 时停止重试，避免无限循环。
+- **保留在途请求**：421 恢复不会取消同一 transport 上其他正在执行的请求，也不会影响其他 `HttpTransport` 实例。
+- **NAPI 结构化状态错误**：`@eric8810/catcher-napi-http` 将原生 HTTP 状态错误规范化为导出的 `HttpError`，上层可直接读取 `status`、`body` 和 `cause`。
+- **跨层回归覆盖**：新增 Rust 与 NAPI 集成测试，覆盖 POST 421 后成功恢复、持续 421 只重试一次、在途请求不被取消，以及结构化状态字段。
+
+### 📦 Packaging
+
+- 所有 npm、Rust、NAPI 和 Flutter 包统一同步到 `0.3.18`。
+
 ## 0.3.17 (2026-06-15)
 
 > 修复 Flutter WebSocket 直连可用性：默认简单直连场景改走 yawc native backend，高级网络配置继续走 reqwest backend；同时完善网络切换重连、Apple framework 元数据与 Flutter 兼容性处理。

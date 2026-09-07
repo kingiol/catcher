@@ -1,6 +1,8 @@
 use reqwest::Client;
 use reqwest_middleware::{ClientBuilder as MiddlewareBuilder, ClientWithMiddleware};
+use reqwest_retry::RetryError;
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -14,8 +16,8 @@ use crate::resilience::timeout::AdaptiveTimeout;
 use crate::transport::retry_middleware::MetricsRetryMiddleware;
 use crate::transport::tls::build_tls_config;
 use crate::types::http::*;
-use catcher_core::types::resilience::CbState;
 use catcher_core::types::network::ProxyMode;
+use catcher_core::types::resilience::CbState;
 use catcher_core::CatcherError;
 
 /// HTTP 传输层 — 真实收发 HTTP 请求，带重试中间件 + 熔断器 + 取消 + 自适应超时
@@ -173,15 +175,11 @@ impl HttpTransport {
                 .as_ref()
                 .map(|p| p.no_proxy.clone())
                 .unwrap_or_default();
-            new_config.proxy = catcher_dns::proxy::detect_system_proxy();
-            if let Some(ref mut p) = new_config.proxy {
-                // 合并：OS whitelist + 用户额外配置的去重
-                for entry in user_no_proxy {
-                    if !p.no_proxy.contains(&entry) {
-                        p.no_proxy.push(entry);
-                    }
-                }
-            }
+            // 检测不到固定代理时必须保留显式 Direct，不能设为 None；None 会让
+            // reqwest 重新启用自动环境/系统代理，破坏 System 的直连回退语义。
+            new_config.proxy = Some(catcher_dns::proxy::detect_system_proxy_or_direct(
+                user_no_proxy,
+            ));
             Arc::new(new_config)
         } else {
             self.config.clone()
@@ -248,10 +246,12 @@ fn build_middleware_client(
 
     // G4: Proxy configuration
     if let Some(ref proxy_config) = config.proxy {
-        // System 模式且尚未解析（url=None）时跳过：networkChanged() 会重新检测后再重建。
-        // 首次构建时若无系统代理，退化直连。
-        if proxy_config.mode == ProxyMode::System && proxy_config.url.is_none() {
-            // 跳过 — 无系统代理可用，直连
+        if proxy_config.mode == ProxyMode::Direct
+            || (proxy_config.mode == ProxyMode::System && proxy_config.url.is_none())
+        {
+            // Direct 必须显式关闭 reqwest 自动环境代理。System 尚未解析到固定代理时也
+            // 按文档语义退化为真正直连，避免残留 HTTP_PROXY/HTTPS_PROXY 被意外使用。
+            reqwest_builder = reqwest_builder.no_proxy();
         } else {
             let proxy_url = proxy_config.transport_url();
             let mut proxy = reqwest::Proxy::all(proxy_url.as_ref())
@@ -319,8 +319,13 @@ fn build_middleware_client(
 }
 
 impl HttpTransport {
-    /// 发起 HTTP 请求（带熔断器检查 + cancel 支持 + metrics 记录 + 自适应超时 + 并发控制）
+    /// 发起 HTTP 请求（带熔断器检查 + cancel 支持 + metrics 记录 + 自适应超时 + 并发控制）。
+    ///
+    /// HTTP 421 表示当前连接无法为目标源站提供权威响应。收到 421 后仅重建
+    /// 当前传输实例的连接池，并在新连接上重试一次；其他传输实例和飞行中的
+    /// 请求不受影响。
     pub async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, CatcherError> {
+        let retry_request = request.clone();
         let (_, result) = self
             .execute_with_token(
                 0,                                          // dummy request_id, not registered for cancel
@@ -328,7 +333,20 @@ impl HttpTransport {
                 request,
             )
             .await;
-        result
+        if !matches!(&result, Err(CatcherError::HttpError { status: 421, .. })) {
+            return result;
+        }
+
+        // RFC 9110 §15.5.20 permits retrying a 421 response, including a
+        // non-idempotent method, over a different connection. Rebuilding this
+        // transport's client retires its pooled connections without cancelling
+        // unrelated in-flight requests or touching other HttpTransport values.
+        self.network_changed()?;
+        self.metrics.increment_http_retries();
+        let (_, retry_result) = self
+            .execute_with_token(0, tokio_util::sync::CancellationToken::new(), retry_request)
+            .await;
+        retry_result
     }
 
     /// 使用预分配的 token 执行请求（N-03，供 FFI 层使用）。
@@ -861,14 +879,73 @@ fn map_middleware_error_standalone(
     e: reqwest_middleware::Error,
     config: &HttpClientConfig,
 ) -> CatcherError {
-    let msg = format!("{e}");
-    if msg.contains("timeout") || msg.contains("timed out") {
-        return CatcherError::RequestTimeout(config.response_timeout_ms);
+    match e {
+        reqwest_middleware::Error::Reqwest(error) => map_reqwest_error(error, config),
+        reqwest_middleware::Error::Middleware(error) => match error.downcast::<RetryError>() {
+            Ok(RetryError::WithRetries { retries, err }) => {
+                let last_error = map_middleware_error_standalone(err, config);
+                CatcherError::RetryExhausted {
+                    attempts: retries.saturating_add(1),
+                    last_error: Box::new(last_error),
+                }
+            }
+            Ok(RetryError::Error(err)) => map_middleware_error_standalone(err, config),
+            Err(error) => CatcherError::Internal(format!(
+                "request middleware: {}",
+                error_chain(error.as_ref())
+            )),
+        },
     }
-    if msg.contains("connect") || msg.contains("connection") {
+}
+
+fn map_reqwest_error(error: reqwest::Error, config: &HttpClientConfig) -> CatcherError {
+    let is_timeout = error.is_timeout();
+    let is_connect = error.is_connect();
+    let host = error
+        .url()
+        .and_then(|url| url.host_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let error = error.without_url();
+    let reason = error_chain(&error);
+    let normalized_reason = reason.to_ascii_lowercase();
+
+    if is_timeout && is_connect {
         return CatcherError::ConnectionTimeout(config.connect_timeout_ms);
     }
-    CatcherError::Internal(format!("request: {e}"))
+    if is_timeout {
+        return CatcherError::RequestTimeout(config.response_timeout_ms);
+    }
+    if normalized_reason.contains("dns")
+        || normalized_reason.contains("failed to lookup address")
+        || normalized_reason.contains("failed to resolve")
+        || normalized_reason.contains("no record found")
+    {
+        return CatcherError::DnsError { host, reason };
+    }
+    if normalized_reason.contains("tls")
+        || normalized_reason.contains("certificate")
+        || normalized_reason.contains("handshake")
+    {
+        return CatcherError::TlsError(reason);
+    }
+    if is_connect {
+        return CatcherError::ConnectionError { host, reason };
+    }
+    CatcherError::TransportError(reason)
+}
+
+fn error_chain(error: &(dyn StdError + 'static)) -> String {
+    let mut messages = Vec::new();
+    let mut current = Some(error);
+    while let Some(cause) = current {
+        let message = cause.to_string();
+        if messages.last() != Some(&message) {
+            messages.push(message);
+        }
+        current = cause.source();
+    }
+    messages.join(": ")
 }
 
 /// Simple base64 encoding for Basic auth (no external dependency needed)
@@ -897,6 +974,117 @@ fn base64_encode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn misdirected_post_retries_once_after_connection_pool_reset() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(421).set_body_string("misdirected"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(201).set_body_string("accepted"))
+            .mount(&server)
+            .await;
+
+        let transport = HttpTransport::new(HttpClientConfig {
+            base_url: server.uri(),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let response = transport
+            .post(
+                "/messages",
+                br#"{"cmid":"client-message-1"}"#,
+                "application/json",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, 201);
+        assert_eq!(transport.network_generation.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.metrics().http_retries, 1);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn persistent_misdirected_response_stops_after_one_retry() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/profile"))
+            .respond_with(ResponseTemplate::new(421).set_body_string("misdirected"))
+            .mount(&server)
+            .await;
+
+        let transport = HttpTransport::new(HttpClientConfig {
+            base_url: server.uri(),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let error = transport.get("/profile").await.unwrap_err();
+
+        assert!(matches!(error, CatcherError::HttpError { status: 421, .. }));
+        assert_eq!(transport.network_generation.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.metrics().http_retries, 1);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn misdirected_recovery_does_not_cancel_in_flight_request() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/slow"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("slow response")
+                    .set_delay(Duration::from_millis(200)),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/profile"))
+            .respond_with(ResponseTemplate::new(421).set_body_string("misdirected"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("profile"))
+            .mount(&server)
+            .await;
+
+        let transport = Arc::new(
+            HttpTransport::new(HttpClientConfig {
+                base_url: server.uri(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let in_flight_transport = transport.clone();
+        let in_flight = tokio::spawn(async move { in_flight_transport.get("/slow").await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let recovered = transport.get("/profile").await.unwrap();
+        let slow_response = in_flight.await.unwrap().unwrap();
+
+        assert_eq!(recovered.status, 200);
+        assert_eq!(slow_response.status, 200);
+        assert_eq!(slow_response.body, b"slow response");
+    }
 
     #[tokio::test]
     async fn re1_http_error_carries_request_info() {
@@ -937,6 +1125,45 @@ mod tests {
         let transport = HttpTransport::new(config).unwrap();
         let result = transport.get("/test").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn retry_exhaustion_preserves_last_transport_error() {
+        let config = HttpClientConfig {
+            base_url: "http://127.0.0.1:0".into(),
+            connect_timeout_ms: 500,
+            response_timeout_ms: 500,
+            retry: Some(catcher_core::RetryConfig {
+                max_attempts: 1,
+                min_backoff_ms: 1,
+                max_backoff_ms: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        let error = transport
+            .get("/test?access_token=must-not-leak")
+            .await
+            .unwrap_err();
+
+        match error {
+            CatcherError::RetryExhausted {
+                attempts,
+                last_error,
+            } => {
+                assert_eq!(attempts, 2);
+                assert!(matches!(
+                    last_error.as_ref(),
+                    CatcherError::ConnectionError { .. }
+                ));
+                let message = last_error.to_string();
+                assert!(message.contains("connection failed"));
+                assert!(!message.contains("Request failed after"));
+                assert!(!message.contains("must-not-leak"));
+            }
+            other => panic!("expected RetryExhausted, got {other:?}"),
+        }
     }
 
     #[tokio::test]

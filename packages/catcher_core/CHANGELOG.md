@@ -1,3 +1,24 @@
+## 0.3.19
+
+### Bug Fixes
+
+- Preserve structured transport failure details through NAPI HTTP retries, including error codes and chained causes, so host applications can diagnose connection failures after retries are exhausted.
+
+### Packaging
+
+- Synchronize the Flutter package version with the unified Catcher `0.3.19` release; the Dart API surface is otherwise unchanged.
+
+## 0.3.18
+
+### Bug Fixes
+
+- **HTTP 421 recovery**: native HTTP requests rebuild the current transport's connection pool and retry once after a `421 Misdirected Request`, without cancelling unrelated in-flight requests.
+- **Structured NAPI HTTP errors**: the Node.js NAPI wrapper exports `HttpError` with `status`, `body`, and `cause` fields so host applications can inspect HTTP status failures directly.
+
+### Packaging
+
+- Synchronize all Catcher package versions to `0.3.18`; the Flutter API surface is otherwise unchanged.
+
 ## 0.3.17
 
 ### Bug Fixes
