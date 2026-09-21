@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "catcher_core_ffi"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "catcher-http",
  "catcher-ws",
