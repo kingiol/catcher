@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "catcher-dns"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "catcher-core",
  "hickory-proto",
@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "catcher-ffi"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "catcher-core",
  "catcher-http",
@@ -362,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "catcher-http"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "async-trait",
  "backon",
@@ -432,7 +432,7 @@ dependencies = [
 
 [[package]]
 name = "catcher-uniffi"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "catcher-core",
  "catcher-http",
@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "catcher-ws"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "backon",
  "base64",

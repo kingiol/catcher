@@ -16,7 +16,7 @@ system-proxy = ["catcher-dns/system-proxy"]
 
 [dependencies]
 catcher-core = { path = "../catcher-core", version = "1.0.0" }
-catcher-dns = { path = "../catcher-dns", version = "0.5.0", default-features = false }
+catcher-dns = { path = "../catcher-dns", version = "0.5.1", default-features = false }
 
 # ── 异步运行时 ──
 tokio = { version = "1", features = ["sync", "time", "net", "io-util", "macros"] }
