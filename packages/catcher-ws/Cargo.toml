@@ -1,6 +1,6 @@
 [package]
 name = "catcher-ws"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "WebSocket client for catcher — resilient reconnect, heartbeat, multi-endpoint racing"
 license = "MIT"
@@ -13,7 +13,7 @@ system-proxy = ["catcher-dns/system-proxy"]
 
 [dependencies]
 catcher-core = { path = "../catcher-core", version = "1.0.0" }
-catcher-dns = { path = "../catcher-dns", version = "0.5.0", features = ["reqwest-resolver"] }
+catcher-dns = { path = "../catcher-dns", version = "0.5.1", features = ["reqwest-resolver"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "io-util", "macros"] }
 futures-util = "0.3"
 backon = "1"

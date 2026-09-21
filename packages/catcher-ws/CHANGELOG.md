@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.1](https://github.com/eric8810/catcher/compare/catcher-ws-v1.0.0...catcher-ws-v1.0.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **release:** align internal Rust dependency versions ([5e8a199](https://github.com/eric8810/catcher/commit/5e8a199e27e3556cbf874963350a94238a3563ad))
+* **release:** align internal Rust dependency versions ([254580c](https://github.com/eric8810/catcher/commit/254580cfccaa9df8ad65d7d20c710ccfdcfa7441))
+* **ws:** avoid needless config initialization ([2b8be59](https://github.com/eric8810/catcher/commit/2b8be598743ab11357891f8ca23f23a4a781483c))
+
 ## [1.0.0](https://github.com/eric8810/catcher/compare/catcher-ws-v0.4.0...catcher-ws-v1.0.0) (2026-09-21)
 
 

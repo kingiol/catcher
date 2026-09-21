@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.1](https://github.com/eric8810/catcher/compare/catcher-web-v0.5.0...catcher-web-v0.5.1) (2026-09-21)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @eric8810/catcher-core bumped to 0.6.0
+
 ## [0.5.0](https://github.com/eric8810/catcher/compare/catcher-web-v0.4.0...catcher-web-v0.5.0) (2026-09-21)
 
 
