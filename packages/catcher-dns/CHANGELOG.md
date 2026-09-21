@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1](https://github.com/eric8810/catcher/compare/catcher-dns-v0.5.0...catcher-dns-v0.5.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **release:** align internal Rust dependency versions ([5e8a199](https://github.com/eric8810/catcher/commit/5e8a199e27e3556cbf874963350a94238a3563ad))
+* **release:** align internal Rust dependency versions ([254580c](https://github.com/eric8810/catcher/commit/254580cfccaa9df8ad65d7d20c710ccfdcfa7441))
+
 ## [0.5.0](https://github.com/eric8810/catcher/compare/catcher-dns-v0.4.0...catcher-dns-v0.5.0) (2026-09-21)
 
 
